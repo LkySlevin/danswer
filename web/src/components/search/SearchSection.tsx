@@ -3,12 +3,14 @@
 import { useRef, useState } from "react";
 import { SearchBar } from "./SearchBar";
 import { SearchResultsDisplay } from "./SearchResultsDisplay";
-import { SourceSelector } from "./filtering/Filters";
+import { SourceSelector } from "./Filters";
 import { Connector, DocumentSet } from "@/lib/types";
+import { SearchTypeSelector } from "./SearchTypeSelector";
 import {
   DanswerDocument,
   Quote,
   SearchResponse,
+  Source,
   FlowType,
   SearchType,
   SearchDefaultOverrides,
@@ -16,11 +18,12 @@ import {
   ValidQuestionResponse,
 } from "@/lib/search/interfaces";
 import { searchRequestStreamed } from "@/lib/search/streamingQa";
+import Cookies from "js-cookie";
 import { SearchHelper } from "./SearchHelper";
 import { CancellationToken, cancellable } from "@/lib/search/cancellable";
 import { NEXT_PUBLIC_DISABLE_STREAMING } from "@/lib/constants";
 import { searchRequest } from "@/lib/search/qa";
-import { useFilters, useObjectState, useTimeRange } from "@/lib/hooks";
+import { useObjectState, useTimeRange } from "@/lib/hooks";
 import { questionValidationStreamed } from "@/lib/search/streamingQuestionValidation";
 
 const SEARCH_DEFAULT_OVERRIDES_START: SearchDefaultOverrides = {
@@ -57,7 +60,11 @@ export const SearchSection: React.FC<SearchSectionProps> = ({
     useObjectState<ValidQuestionResponse>(VALID_QUESTION_RESPONSE_DEFAULT);
 
   // Filters
-  const filterManager = useFilters();
+  const [timeRange, setTimeRange] = useTimeRange();
+  const [sources, setSources] = useState<Source[]>([]);
+  const [selectedDocumentSets, setSelectedDocumentSets] = useState<string[]>(
+    []
+  );
 
   // Search Type
   const [selectedSearchType, setSelectedSearchType] =
@@ -74,7 +81,6 @@ export const SearchSection: React.FC<SearchSectionProps> = ({
     documents: null,
     suggestedSearchType: null,
     suggestedFlowType: null,
-    selectedDocIndices: null,
     error: null,
     queryEventId: null,
   };
@@ -102,11 +108,6 @@ export const SearchSection: React.FC<SearchSectionProps> = ({
     setSearchResponse((prevState) => ({
       ...(prevState || initialSearchResponse),
       suggestedFlowType,
-    }));
-  const updateSelectedDocIndices = (docIndices: number[]) =>
-    setSearchResponse((prevState) => ({
-      ...(prevState || initialSearchResponse),
-      selectedDocIndices: docIndices,
     }));
   const updateError = (error: FlowType) =>
     setSearchResponse((prevState) => ({
@@ -139,9 +140,9 @@ export const SearchSection: React.FC<SearchSectionProps> = ({
       : searchRequestStreamed;
     const searchFnArgs = {
       query,
-      sources: filterManager.selectedSources,
-      documentSets: filterManager.selectedDocumentSets,
-      timeRange: filterManager.timeRange,
+      sources,
+      documentSets: selectedDocumentSets,
+      timeRange,
       updateCurrentAnswer: cancellable({
         cancellationToken: lastSearchCancellationToken.current,
         fn: updateCurrentAnswer,
@@ -161,10 +162,6 @@ export const SearchSection: React.FC<SearchSectionProps> = ({
       updateSuggestedFlowType: cancellable({
         cancellationToken: lastSearchCancellationToken.current,
         fn: updateSuggestedFlowType,
-      }),
-      updateSelectedDocIndices: cancellable({
-        cancellationToken: lastSearchCancellationToken.current,
-        fn: updateSelectedDocIndices,
       }),
       updateError: cancellable({
         cancellationToken: lastSearchCancellationToken.current,
@@ -192,17 +189,22 @@ export const SearchSection: React.FC<SearchSectionProps> = ({
   };
 
   return (
-    <div className="relative max-w-[2000px] xl:max-w-[1430px] mx-auto">
+    <div className="relative max-w-[2000px] xl:max-w-[1400px] mx-auto">
       <div className="absolute left-0 hidden 2xl:block w-64">
         {(connectors.length > 0 || documentSets.length > 0) && (
           <SourceSelector
-            {...filterManager}
+            timeRange={timeRange}
+            setTimeRange={setTimeRange}
+            selectedSources={sources}
+            setSelectedSources={setSources}
+            selectedDocumentSets={selectedDocumentSets}
+            setSelectedDocumentSets={setSelectedDocumentSets}
             availableDocumentSets={documentSets}
             existingSources={connectors.map((connector) => connector.source)}
           />
         )}
 
-        <div className="mt-10 pr-5">
+        <div className="mt-10 pr-2">
           <SearchHelper
             isFetching={isFetching}
             searchResponse={searchResponse}

@@ -108,7 +108,6 @@ class HybridCapable(abc.ABC):
         filters: IndexFilters,
         favor_recent: bool,
         num_to_retrieve: int,
-        hybrid_alpha: float | None = None,
     ) -> list[InferenceChunk]:
         raise NotImplementedError
 

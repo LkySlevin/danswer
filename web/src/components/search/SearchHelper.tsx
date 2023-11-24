@@ -38,6 +38,7 @@ const getAssistantMessage = ({
   if (
     searchResponse.suggestedFlowType === FlowType.SEARCH &&
     !defaultOverrides.forceDisplayQA &&
+    !isFetching &&
     searchResponse.answer
   ) {
     return (

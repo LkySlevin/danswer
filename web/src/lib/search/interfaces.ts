@@ -13,12 +13,8 @@ export const SearchType = {
 };
 export type SearchType = (typeof SearchType)[keyof typeof SearchType];
 
-export interface AnswerPiecePacket {
+export interface AnswerPiece {
   answer_piece: string;
-}
-
-export interface ErrorMessagePacket {
-  error: string;
 }
 
 export interface Quote {
@@ -28,10 +24,6 @@ export interface Quote {
   source_type: ValidSources;
   blurb: string;
   semantic_identifier: string;
-}
-
-export interface QuotesInfoPacket {
-  quotes: Quote[];
 }
 
 export interface DanswerDocument {
@@ -47,29 +39,12 @@ export interface DanswerDocument {
   updated_at: string | null;
 }
 
-export interface DocumentInfoPacket {
-  top_documents: DanswerDocument[];
-  predicted_flow: FlowType | null;
-  predicted_search: SearchType | null;
-  time_cutoff: string | null;
-  favor_recent: boolean;
-}
-
-export interface LLMRelevanceFilterPacket {
-  relevant_chunk_indices: number[];
-}
-
-export interface QueryEventIdPacket {
-  query_event_id: number;
-}
-
 export interface SearchResponse {
   suggestedSearchType: SearchType | null;
   suggestedFlowType: FlowType | null;
   answer: string | null;
   quotes: Quote[] | null;
   documents: DanswerDocument[] | null;
-  selectedDocIndices: number[] | null;
   error: string | null;
   queryEventId: number | null;
 }
@@ -84,12 +59,6 @@ export interface SearchDefaultOverrides {
   offset: number;
 }
 
-export interface Filters {
-  source_type: string[] | null;
-  document_set: string[] | null;
-  time_cutoff: Date | null;
-}
-
 export interface SearchRequestArgs {
   query: string;
   sources: Source[];
@@ -98,7 +67,6 @@ export interface SearchRequestArgs {
   updateCurrentAnswer: (val: string) => void;
   updateQuotes: (quotes: Quote[]) => void;
   updateDocs: (documents: DanswerDocument[]) => void;
-  updateSelectedDocIndices: (docIndices: number[]) => void;
   updateSuggestedSearchType: (searchType: SearchType) => void;
   updateSuggestedFlowType: (flowType: FlowType) => void;
   updateError: (error: string) => void;

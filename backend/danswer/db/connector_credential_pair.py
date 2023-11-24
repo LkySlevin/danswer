@@ -54,8 +54,6 @@ def get_last_successful_attempt_time(
     credential_id: int,
     db_session: Session,
 ) -> float:
-    """Gets the timestamp of the last successful index run stored in
-    the CC Pair row in the database"""
     connector_credential_pair = get_connector_credential_pair(
         connector_id, credential_id, db_session
     )
@@ -86,10 +84,7 @@ def update_connector_credential_pair(
     cc_pair.last_attempt_status = attempt_status
     # simply don't update last_successful_index_time if run_dt is not specified
     # at worst, this would result in re-indexing documents that were already indexed
-    if (
-        attempt_status == IndexingStatus.SUCCESS
-        or attempt_status == IndexingStatus.IN_PROGRESS
-    ) and run_dt is not None:
+    if attempt_status == IndexingStatus.SUCCESS and run_dt is not None:
         cc_pair.last_successful_index_time = run_dt
     if net_docs is not None:
         cc_pair.total_docs_indexed += net_docs

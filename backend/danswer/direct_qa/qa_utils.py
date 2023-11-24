@@ -1,3 +1,4 @@
+import json
 import math
 import re
 from collections.abc import Generator
@@ -10,7 +11,6 @@ import regex
 
 from danswer.configs.app_configs import NUM_DOCUMENT_TOKENS_FED_TO_GENERATIVE_MODEL
 from danswer.configs.app_configs import QUOTE_ALLOWED_ERROR_PERCENT
-from danswer.configs.constants import IGNORE_FOR_QA
 from danswer.direct_qa.interfaces import DanswerAnswer
 from danswer.direct_qa.interfaces import DanswerAnswerPiece
 from danswer.direct_qa.interfaces import DanswerQuote
@@ -23,13 +23,12 @@ from danswer.prompts.constants import UNCERTAINTY_PAT
 from danswer.utils.logger import setup_logger
 from danswer.utils.text_processing import clean_model_quote
 from danswer.utils.text_processing import clean_up_code_blocks
-from danswer.utils.text_processing import extract_embedded_json
 from danswer.utils.text_processing import shared_precompare_cleanup
 
 logger = setup_logger()
 
 
-def _extract_answer_quotes_freeform(
+def extract_answer_quotes_freeform(
     answer_raw: str,
 ) -> Tuple[Optional[str], Optional[list[str]]]:
     """Splits the model output into an Answer and 0 or more Quote sections.
@@ -61,7 +60,7 @@ def _extract_answer_quotes_freeform(
     return answer, sections_clean[1:]
 
 
-def _extract_answer_quotes_json(
+def extract_answer_quotes_json(
     answer_dict: dict[str, str | list[str]]
 ) -> Tuple[Optional[str], Optional[list[str]]]:
     answer_dict = {k.lower(): v for k, v in answer_dict.items()}
@@ -72,30 +71,24 @@ def _extract_answer_quotes_json(
     return answer, quotes
 
 
-def _extract_answer_json(raw_model_output: str) -> dict:
-    try:
-        answer_json = extract_embedded_json(raw_model_output)
-    except (ValueError, JSONDecodeError):
-        # LLMs get confused when handling the list in the json. Sometimes it doesn't attend
-        # enough to the previous { token so it just ends the list of quotes and stops there
-        # here, we add logic to try to fix this LLM error.
-        answer_json = extract_embedded_json(raw_model_output + "}")
-
-    if "answer" not in answer_json:
-        raise ValueError("Model did not output an answer as expected.")
-
-    return answer_json
-
-
 def separate_answer_quotes(
     answer_raw: str, is_json_prompt: bool = False
 ) -> Tuple[Optional[str], Optional[list[str]]]:
-    """Takes in a raw model output and pulls out the answer and the quotes sections."""
-    if is_json_prompt:
-        model_raw_json = _extract_answer_json(answer_raw)
-        return _extract_answer_quotes_json(model_raw_json)
-
-    return _extract_answer_quotes_freeform(clean_up_code_blocks(answer_raw))
+    try:
+        model_raw_json = json.loads(answer_raw, strict=False)
+        return extract_answer_quotes_json(model_raw_json)
+    except JSONDecodeError:
+        # LLMs get confused when handling the list in the json. Sometimes it doesn't attend
+        # enough to the previous { token so it just ends the list of quotes and stops there
+        # here, we add logic to try to fix this LLM error.
+        try:
+            model_raw_json = json.loads(answer_raw + "}", strict=False)
+            return extract_answer_quotes_json(model_raw_json)
+        except JSONDecodeError:
+            if is_json_prompt:
+                logger.error("Model did not output in json format as expected.")
+                raise
+            return extract_answer_quotes_freeform(answer_raw)
 
 
 def match_quotes_to_docs(
@@ -162,10 +155,9 @@ def process_answer(
     chunks: list[InferenceChunk],
     is_json_prompt: bool = True,
 ) -> tuple[DanswerAnswer, DanswerQuotes]:
-    """Used (1) in the non-streaming case to process the model output
-    into an Answer and Quotes AND (2) after the complete streaming response
-    has been received to process the model output into an Answer and Quotes."""
-    answer, quote_strings = separate_answer_quotes(answer_raw, is_json_prompt)
+    answer_clean = clean_up_code_blocks(answer_raw)
+
+    answer, quote_strings = separate_answer_quotes(answer_clean, is_json_prompt)
     if answer == UNCERTAINTY_PAT or not answer:
         if answer == UNCERTAINTY_PAT:
             logger.debug("Answer matched UNCERTAINTY_PAT")
@@ -184,7 +176,7 @@ def process_answer(
     return DanswerAnswer(answer=answer), quotes
 
 
-def _stream_json_answer_end(answer_so_far: str, next_token: str) -> bool:
+def stream_json_answer_end(answer_so_far: str, next_token: str) -> bool:
     next_token = next_token.replace('\\"', "")
     # If the previous character is an escape token, don't consider the first character of next_token
     # This does not work if it's an escaped escape sign before the " but this is rare, not worth handling
@@ -195,7 +187,7 @@ def _stream_json_answer_end(answer_so_far: str, next_token: str) -> bool:
     return False
 
 
-def _extract_quotes_from_completed_token_stream(
+def extract_quotes_from_completed_token_stream(
     model_output: str, context_chunks: list[InferenceChunk]
 ) -> DanswerQuotes:
     answer, quotes = process_answer(model_output, context_chunks)
@@ -212,10 +204,7 @@ def process_model_tokens(
     context_docs: list[InferenceChunk],
     is_json_prompt: bool = True,
 ) -> Generator[DanswerAnswerPiece | DanswerQuotes, None, None]:
-    """Used in the streaming case to process the model output
-    into an Answer and Quotes
-
-    Yields Answer tokens back out in a dict for streaming to frontend
+    """Yields Answer tokens back out in a dict for streaming to frontend
     When Answer section ends, yields dict with answer_finished key
     Collects all the tokens at the end to form the complete model output"""
     quote_pat = f"\n{QUOTE_PAT}"
@@ -238,14 +227,14 @@ def process_model_tokens(
             found_answer_start = True
 
             # Prevent heavy cases of hallucinations where model is not even providing a json until later
-            if is_json_prompt and len(model_output) > 40:
+            if is_json_prompt and len(model_output) > 20:
                 logger.warning("LLM did not produce json as prompted")
                 found_answer_end = True
 
             continue
 
         if found_answer_start and not found_answer_end:
-            if is_json_prompt and _stream_json_answer_end(model_previous, token):
+            if is_json_prompt and stream_json_answer_end(model_previous, token):
                 found_answer_end = True
                 yield DanswerAnswerPiece(answer_piece=None)
                 continue
@@ -262,7 +251,20 @@ def process_model_tokens(
 
     logger.debug(f"Raw Model QnA Output: {model_output}")
 
-    yield _extract_quotes_from_completed_token_stream(model_output, context_docs)
+    # for a JSON prompt, make sure that we're only passing through the "JSON part"
+    # since that is what `extract_quotes_from_completed_token_stream` expects
+    if is_json_prompt:
+        try:
+            json_answer_ind = model_output.index('{"answer":')
+            if json_answer_ind != 0:
+                model_output = model_output[json_answer_ind:]
+            end = model_output.rfind("}")
+            if end != -1:
+                model_output = model_output[: end + 1]
+        except ValueError:
+            logger.exception("Did not find answer pattern in response for JSON prompt")
+
+    yield extract_quotes_from_completed_token_stream(model_output, context_docs)
 
 
 def simulate_streaming_response(model_out: str) -> Generator[str, None, None]:
@@ -314,62 +316,3 @@ def get_usable_chunks(
         offset_into_chunks += len(usable_chunks)
 
     return usable_chunks
-
-
-def get_chunks_for_qa(
-    chunks: list[InferenceChunk],
-    llm_chunk_selection: list[bool],
-    token_limit: int | None = NUM_DOCUMENT_TOKENS_FED_TO_GENERATIVE_MODEL,
-    batch_offset: int = 0,
-) -> list[int]:
-    """
-    Gives back indices of chunks to pass into the LLM for Q&A.
-
-    Only selects chunks viable for Q&A, within the token limit, and prioritize those selected
-    by the LLM in a separate flow (this can be turned off)
-
-    Note, the batch_offset calculation has to count the batches from the beginning each time as
-    there's no way to know which chunks were included in the prior batches without recounting atm,
-    this is somewhat slow as it requires tokenizing all the chunks again
-    """
-    batch_index = 0
-    latest_batch_indices: list[int] = []
-    token_count = 0
-
-    # First iterate the LLM selected chunks, then iterate the rest if tokens remaining
-    for selection_target in [True, False]:
-        for ind, chunk in enumerate(chunks):
-            if llm_chunk_selection[ind] is not selection_target or chunk.metadata.get(
-                IGNORE_FOR_QA
-            ):
-                continue
-
-            # We calculate it live in case the user uses a different LLM + tokenizer
-            chunk_token = check_number_of_tokens(chunk.content)
-            # 50 for an approximate/slight overestimate for # tokens for metadata for the chunk
-            token_count += chunk_token + 50
-
-            # Always use at least 1 chunk
-            if (
-                token_limit is None
-                or token_count <= token_limit
-                or not latest_batch_indices
-            ):
-                latest_batch_indices.append(ind)
-                current_chunk_unused = False
-            else:
-                current_chunk_unused = True
-
-            if token_limit is not None and token_count >= token_limit:
-                if batch_index < batch_offset:
-                    batch_index += 1
-                    if current_chunk_unused:
-                        latest_batch_indices = [ind]
-                        token_count = chunk_token
-                    else:
-                        latest_batch_indices = []
-                        token_count = 0
-                else:
-                    return latest_batch_indices
-
-    return latest_batch_indices

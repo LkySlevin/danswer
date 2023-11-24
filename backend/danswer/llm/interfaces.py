@@ -23,10 +23,6 @@ class LLM(abc.ABC):
         return True
 
     @abc.abstractmethod
-    def log_model_configs(self) -> None:
-        raise NotImplementedError
-
-    @abc.abstractmethod
     def invoke(self, prompt: LanguageModelInput) -> str:
         raise NotImplementedError
 

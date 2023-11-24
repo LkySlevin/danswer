@@ -1,5 +1,4 @@
 import nltk  # type:ignore
-import torch
 import uvicorn
 from fastapi import FastAPI
 from fastapi import Request
@@ -8,7 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from httpx_oauth.clients.google import GoogleOAuth2
 
-from danswer import __version__
 from danswer.auth.schemas import UserCreate
 from danswer.auth.schemas import UserRead
 from danswer.auth.schemas import UserUpdate
@@ -19,9 +17,6 @@ from danswer.configs.app_configs import APP_HOST
 from danswer.configs.app_configs import APP_PORT
 from danswer.configs.app_configs import AUTH_TYPE
 from danswer.configs.app_configs import DISABLE_GENERATIVE_AI
-from danswer.configs.app_configs import MODEL_SERVER_HOST
-from danswer.configs.app_configs import MODEL_SERVER_PORT
-from danswer.configs.app_configs import MULTILINGUAL_QUERY_EXPANSION
 from danswer.configs.app_configs import OAUTH_CLIENT_ID
 from danswer.configs.app_configs import OAUTH_CLIENT_SECRET
 from danswer.configs.app_configs import SECRET
@@ -30,7 +25,6 @@ from danswer.configs.constants import AuthType
 from danswer.configs.model_configs import ASYM_PASSAGE_PREFIX
 from danswer.configs.model_configs import ASYM_QUERY_PREFIX
 from danswer.configs.model_configs import DOCUMENT_ENCODER_MODEL
-from danswer.configs.model_configs import FAST_GEN_AI_MODEL_VERSION
 from danswer.configs.model_configs import GEN_AI_API_ENDPOINT
 from danswer.configs.model_configs import GEN_AI_MODEL_PROVIDER
 from danswer.configs.model_configs import GEN_AI_MODEL_VERSION
@@ -38,7 +32,6 @@ from danswer.configs.model_configs import SKIP_RERANKING
 from danswer.db.credentials import create_initial_public_credential
 from danswer.direct_qa.factory import get_default_qa_model
 from danswer.document_index.factory import get_default_document_index
-from danswer.llm.factory import get_default_llm
 from danswer.server.cc_pair.api import router as cc_pair_router
 from danswer.server.chat_backend import router as chat_router
 from danswer.server.connector import router as connector_router
@@ -51,8 +44,6 @@ from danswer.server.slack_bot_management import router as slack_bot_management_r
 from danswer.server.state import router as state_router
 from danswer.server.users import router as user_router
 from danswer.utils.logger import setup_logger
-from danswer.utils.telemetry import optional_telemetry
-from danswer.utils.telemetry import RecordType
 from danswer.utils.variable_functionality import fetch_versioned_implementation
 
 
@@ -81,7 +72,7 @@ def value_error_handler(_: Request, exc: ValueError) -> JSONResponse:
 
 
 def get_application() -> FastAPI:
-    application = FastAPI(title="Danswer Backend", version=__version__)
+    application = FastAPI(title="Internal Search QA Backend", debug=True, version="0.1")
     application.include_router(backend_router)
     application.include_router(chat_router)
     application.include_router(event_processing_router)
@@ -174,17 +165,8 @@ def get_application() -> FastAPI:
         else:
             logger.info(f"Using LLM Provider: {GEN_AI_MODEL_PROVIDER}")
             logger.info(f"Using LLM Model Version: {GEN_AI_MODEL_VERSION}")
-            if GEN_AI_MODEL_VERSION != FAST_GEN_AI_MODEL_VERSION:
-                logger.info(
-                    f"Using Fast LLM Model Version: {FAST_GEN_AI_MODEL_VERSION}"
-                )
             if GEN_AI_API_ENDPOINT:
                 logger.info(f"Using LLM Endpoint: {GEN_AI_API_ENDPOINT}")
-
-        if MULTILINGUAL_QUERY_EXPANSION:
-            logger.info(
-                f"Using multilingual flow with languages: {MULTILINGUAL_QUERY_EXPANSION}"
-            )
 
         if SKIP_RERANKING:
             logger.info("Reranking step of search flow is disabled")
@@ -194,23 +176,11 @@ def get_application() -> FastAPI:
             logger.info(f'Query embedding prefix: "{ASYM_QUERY_PREFIX}"')
             logger.info(f'Passage embedding prefix: "{ASYM_PASSAGE_PREFIX}"')
 
-        if MODEL_SERVER_HOST:
-            logger.info(
-                f"Using Model Server: http://{MODEL_SERVER_HOST}:{MODEL_SERVER_PORT}"
-            )
-        else:
-            logger.info("Warming up local NLP models.")
-            warm_up_models()
-
-            if torch.cuda.is_available():
-                logger.info("GPU is available")
-            else:
-                logger.info("GPU is not available")
-            logger.info(f"Torch Threads: {torch.get_num_threads()}")
-
+        logger.info("Warming up local NLP models.")
+        warm_up_models()
+        qa_model = get_default_qa_model()
         # This is for the LLM, most LLMs will not need warming up
-        get_default_llm().log_model_configs()
-        get_default_qa_model().warm_up_model()
+        qa_model.warm_up_model()
 
         logger.info("Verifying query preprocessing (NLTK) data is downloaded")
         nltk.download("stopwords", quiet=True)
@@ -225,10 +195,6 @@ def get_application() -> FastAPI:
 
         logger.info("Verifying Document Index(s) is/are available.")
         get_default_document_index().ensure_indices_exist()
-
-        optional_telemetry(
-            record_type=RecordType.VERSION, data={"version": __version__}
-        )
 
     application.add_middleware(
         CORSMiddleware,
@@ -245,7 +211,5 @@ app = get_application()
 
 
 if __name__ == "__main__":
-    logger.info(
-        f"Starting Danswer Backend version {__version__} on http://{APP_HOST}:{str(APP_PORT)}/"
-    )
+    logger.info(f"Starting Danswer Backend on http://{APP_HOST}:{str(APP_PORT)}/")
     uvicorn.run(app, host=APP_HOST, port=APP_PORT)

@@ -48,8 +48,6 @@ from danswer.db.engine import get_session
 from danswer.db.models import AccessToken
 from danswer.db.models import User
 from danswer.utils.logger import setup_logger
-from danswer.utils.telemetry import optional_telemetry
-from danswer.utils.telemetry import RecordType
 from danswer.utils.variable_functionality import fetch_versioned_implementation
 
 
@@ -172,7 +170,6 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         self, user: User, request: Optional[Request] = None
     ) -> None:
         logger.info(f"User {user.id} has registered.")
-        optional_telemetry(record_type=RecordType.SIGN_UP, data={"user": "create"})
 
     async def on_after_forgot_password(
         self, user: User, token: str, request: Optional[Request] = None

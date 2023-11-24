@@ -24,8 +24,6 @@ from danswer.utils.logger import setup_logger
 
 logger = setup_logger()
 
-_NOTION_CALL_TIMEOUT = 30  # 30 seconds
-
 
 @dataclass
 class NotionPage:
@@ -82,7 +80,6 @@ class NotionConnector(LoadConnector, PollConnector):
             "Notion-Version": "2022-06-28",
         }
         self.indexed_pages: set[str] = set()
-        self.root_page_id = root_page_id
         # if enabled, will recursively index child pages as they are found rather
         # relying entirely on the `search` API. We have recieved reports that the
         # `search` API misses many pages - in those cases, this might need to be
@@ -90,9 +87,8 @@ class NotionConnector(LoadConnector, PollConnector):
         # NOTE: this also removes all benefits polling, since we need to traverse
         # all pages regardless of if they are updated. If the notion workspace is
         # very large, this may not be practical.
-        self.recursive_index_enabled = (
-            recursive_index_enabled or self.root_page_id is not None
-        )
+        self.recursive_index_enabled = recursive_index_enabled
+        self.root_page_id = root_page_id
 
     @retry(tries=3, delay=1, backoff=2)
     def _fetch_blocks(self, block_id: str, cursor: str | None = None) -> dict[str, Any]:
@@ -100,12 +96,7 @@ class NotionConnector(LoadConnector, PollConnector):
         logger.debug(f"Fetching children of block with ID '{block_id}'")
         block_url = f"https://api.notion.com/v1/blocks/{block_id}/children"
         query_params = None if not cursor else {"start_cursor": cursor}
-        res = requests.get(
-            block_url,
-            headers=self.headers,
-            params=query_params,
-            timeout=_NOTION_CALL_TIMEOUT,
-        )
+        res = requests.get(block_url, headers=self.headers, params=query_params)
         try:
             res.raise_for_status()
         except Exception as e:
@@ -118,11 +109,7 @@ class NotionConnector(LoadConnector, PollConnector):
         """Fetch a page from it's ID via the Notion API."""
         logger.debug(f"Fetching page for ID '{page_id}'")
         block_url = f"https://api.notion.com/v1/pages/{page_id}"
-        res = requests.get(
-            block_url,
-            headers=self.headers,
-            timeout=_NOTION_CALL_TIMEOUT,
-        )
+        res = requests.get(block_url, headers=self.headers)
         try:
             res.raise_for_status()
         except Exception as e:
@@ -138,12 +125,7 @@ class NotionConnector(LoadConnector, PollConnector):
         logger.debug(f"Fetching database for ID '{database_id}'")
         block_url = f"https://api.notion.com/v1/databases/{database_id}/query"
         body = None if not cursor else {"start_cursor": cursor}
-        res = requests.post(
-            block_url,
-            headers=self.headers,
-            json=body,
-            timeout=_NOTION_CALL_TIMEOUT,
-        )
+        res = requests.post(block_url, headers=self.headers, json=body)
         try:
             res.raise_for_status()
         except Exception as e:
@@ -304,7 +286,6 @@ class NotionConnector(LoadConnector, PollConnector):
             "https://api.notion.com/v1/search",
             headers=self.headers,
             json=query_dict,
-            timeout=_NOTION_CALL_TIMEOUT,
         )
         res.raise_for_status()
         return NotionSearchResponse(**res.json())

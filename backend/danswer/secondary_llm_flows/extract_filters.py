@@ -5,10 +5,9 @@ from datetime import timezone
 
 from dateutil.parser import parse
 
-from danswer.configs.app_configs import DISABLE_LLM_FILTER_EXTRACTION
+from danswer.configs.app_configs import DISABLE_TIME_FILTER_EXTRACTION
 from danswer.llm.factory import get_default_llm
 from danswer.llm.utils import dict_based_prompt_to_langchain_prompt
-from danswer.prompts.prompt_utils import get_current_llm_day_time
 from danswer.prompts.secondary_llm_flows import TIME_FILTER_PROMPT
 from danswer.server.models import QuestionRequest
 from danswer.utils.logger import setup_logger
@@ -52,9 +51,7 @@ def extract_time_filter(query: str) -> tuple[datetime | None, bool]:
         messages = [
             {
                 "role": "system",
-                "content": TIME_FILTER_PROMPT.format(
-                    current_day_time_str=get_current_llm_day_time()
-                ),
+                "content": TIME_FILTER_PROMPT,
             },
             {
                 "role": "user",
@@ -110,9 +107,7 @@ def extract_time_filter(query: str) -> tuple[datetime | None, bool]:
             if "date" in model_json:
                 extracted_time = best_match_time(model_json["date"])
                 if extracted_time is not None:
-                    # LLM struggles to understand the concept of not sensitive within a time range
-                    # So if a time is extracted, just go with that alone
-                    return extracted_time, False
+                    return extracted_time, favor_recent
 
             time_diff = None
             multiplier = 1.0
@@ -140,9 +135,7 @@ def extract_time_filter(query: str) -> tuple[datetime | None, bool]:
 
             if time_diff is not None:
                 current = datetime.now(timezone.utc)
-                # LLM struggles to understand the concept of not sensitive within a time range
-                # So if a time is extracted, just go with that alone
-                return current - time_diff, False
+                return current - time_diff, favor_recent
 
             # If we failed to extract a hard filter, just pass back the value of favor recent
             return None, favor_recent
@@ -159,7 +152,7 @@ def extract_time_filter(query: str) -> tuple[datetime | None, bool]:
 
 def extract_question_time_filters(
     question: QuestionRequest,
-    disable_llm_extraction: bool = DISABLE_LLM_FILTER_EXTRACTION,
+    disable_llm_extraction: bool = DISABLE_TIME_FILTER_EXTRACTION,
 ) -> tuple[datetime | None, bool]:
     time_cutoff = question.filters.time_cutoff
     favor_recent = question.favor_recent

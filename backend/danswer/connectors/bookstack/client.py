@@ -47,6 +47,7 @@ class BookStackApiClient:
         return {
             "Authorization": auth,
             "Accept": "application/json",
+            "User-Agent": "cat"
         }
 
     def _build_url(self, endpoint: str) -> str:

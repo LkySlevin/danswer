@@ -1,4 +1,4 @@
-name: Build and Push Backend Image on Tag
+name: Build and Push Backend Images on Tagging
 
 on:
   push:
@@ -33,4 +33,4 @@ jobs:
           danswer/danswer-backend:${{ github.ref_name }}
           danswer/danswer-backend:latest
         build-args: |
-          DANSWER_VERSION=${{ github.ref_name }}
+          DANSWER_VERSION: ${{ github.ref_name }}

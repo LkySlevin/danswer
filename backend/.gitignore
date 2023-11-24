@@ -1,5 +1,4 @@
 __pycache__/
-.mypy_cache
 .idea/
 site_crawls/
 .ipynb_checkpoints/

@@ -80,7 +80,7 @@ class DocMetadataAwareIndexChunk(IndexChunk):
 @dataclass
 class InferenceChunk(BaseChunk):
     document_id: str
-    source_type: str  # This is the string value of the enum already like "web"
+    source_type: str
     semantic_identifier: str
     boost: int
     recency_bias: float
@@ -93,10 +93,6 @@ class InferenceChunk(BaseChunk):
     match_highlights: list[str]
     # when the doc was last updated
     updated_at: datetime | None
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self.document_id}__{self.chunk_id}"
 
     def __repr__(self) -> str:
         blurb_words = self.blurb.split()

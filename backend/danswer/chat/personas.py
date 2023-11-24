@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 
 import yaml
@@ -10,13 +11,19 @@ from danswer.db.engine import get_sqlalchemy_engine
 from danswer.db.models import DocumentSet as DocumentSetDBModel
 from danswer.db.models import Persona
 from danswer.db.models import ToolInfo
-from danswer.prompts.prompt_utils import get_current_llm_day_time
 
 
 def build_system_text_from_persona(persona: Persona) -> str | None:
     text = (persona.system_text or "").strip()
     if persona.datetime_aware:
-        text += "\n\nAdditional Information:\n" f"\t- {get_current_llm_day_time()}."
+        current_datetime = datetime.now()
+        # Format looks like: "October 16, 2023 14:30"
+        formatted_datetime = current_datetime.strftime("%B %d, %Y %H:%M")
+
+        text += (
+            "\n\nAdditional Information:\n"
+            f"\t- The current date and time is {formatted_datetime}."
+        )
 
     return text or None
 

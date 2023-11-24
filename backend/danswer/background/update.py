@@ -1,6 +1,7 @@
 import logging
 import time
 from datetime import datetime
+from datetime import timezone
 
 import dask
 import torch
@@ -9,18 +10,23 @@ from dask.distributed import Future
 from distributed import LocalCluster
 from sqlalchemy.orm import Session
 
-from danswer.background.indexing.dask_utils import ResourceLogger
 from danswer.background.indexing.job_client import SimpleJob
 from danswer.background.indexing.job_client import SimpleJobClient
-from danswer.background.indexing.run_indexing import run_indexing_entrypoint
 from danswer.configs.app_configs import EXPERIMENTAL_SIMPLE_JOB_CLIENT_ENABLED
-from danswer.configs.app_configs import LOG_LEVEL
-from danswer.configs.app_configs import MODEL_SERVER_HOST
 from danswer.configs.app_configs import NUM_INDEXING_WORKERS
 from danswer.configs.model_configs import MIN_THREADS_ML_MODELS
+from danswer.connectors.factory import instantiate_connector
+from danswer.connectors.interfaces import GenerateDocumentsOutput
+from danswer.connectors.interfaces import LoadConnector
+from danswer.connectors.interfaces import PollConnector
+from danswer.connectors.models import IndexAttemptMetadata
+from danswer.connectors.models import InputType
+from danswer.db.connector import disable_connector
 from danswer.db.connector import fetch_connectors
+from danswer.db.connector_credential_pair import get_last_successful_attempt_time
 from danswer.db.connector_credential_pair import mark_all_in_progress_cc_pairs_failed
 from danswer.db.connector_credential_pair import update_connector_credential_pair
+from danswer.db.credentials import backend_update_credential_json
 from danswer.db.engine import get_db_current_time
 from danswer.db.engine import get_sqlalchemy_engine
 from danswer.db.index_attempt import create_index_attempt
@@ -29,10 +35,15 @@ from danswer.db.index_attempt import get_inprogress_index_attempts
 from danswer.db.index_attempt import get_last_attempt
 from danswer.db.index_attempt import get_not_started_index_attempts
 from danswer.db.index_attempt import mark_attempt_failed
+from danswer.db.index_attempt import mark_attempt_in_progress
+from danswer.db.index_attempt import mark_attempt_succeeded
+from danswer.db.index_attempt import update_docs_indexed
 from danswer.db.models import Connector
 from danswer.db.models import IndexAttempt
 from danswer.db.models import IndexingStatus
+from danswer.indexing.indexing_pipeline import build_indexing_pipeline
 from danswer.search.search_nlp_models import warm_up_models
+from danswer.utils.logger import IndexAttemptSingleton
 from danswer.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -46,9 +57,6 @@ _UNEXPECTED_STATE_FAILURE_REASON = (
 )
 
 
-"""Util funcs"""
-
-
 def _get_num_threads() -> int:
     """Get # of "threads" to use for ML models in an indexing job. By default uses
     the torch implementation, which returns the # of physical cores on the machine.
@@ -56,34 +64,19 @@ def _get_num_threads() -> int:
     return max(MIN_THREADS_ML_MODELS, torch.get_num_threads())
 
 
-def _should_create_new_indexing(
+def should_create_new_indexing(
     connector: Connector, last_index: IndexAttempt | None, db_session: Session
 ) -> bool:
     if connector.refresh_freq is None:
         return False
     if not last_index:
         return True
-
-    # only one scheduled job per connector at a time
-    if last_index.status == IndexingStatus.NOT_STARTED:
-        return False
-
     current_db_time = get_db_current_time(db_session)
     time_since_index = current_db_time - last_index.time_updated
     return time_since_index.total_seconds() >= connector.refresh_freq
 
 
-def _is_indexing_job_marked_as_finished(index_attempt: IndexAttempt | None) -> bool:
-    if index_attempt is None:
-        return False
-
-    return (
-        index_attempt.status == IndexingStatus.FAILED
-        or index_attempt.status == IndexingStatus.SUCCESS
-    )
-
-
-def _mark_run_failed(
+def mark_run_failed(
     db_session: Session, index_attempt: IndexAttempt, failure_reason: str
 ) -> None:
     """Marks the `index_attempt` row as failed + updates the `
@@ -107,9 +100,6 @@ def _mark_run_failed(
             credential_id=index_attempt.credential_id,
             attempt_status=IndexingStatus.FAILED,
         )
-
-
-"""Main funcs"""
 
 
 def create_indexing_jobs(
@@ -141,7 +131,7 @@ def create_indexing_jobs(
                 continue
 
             last_attempt = get_last_attempt(connector.id, credential.id, db_session)
-            if not _should_create_new_indexing(connector, last_attempt, db_session):
+            if not should_create_new_indexing(connector, last_attempt, db_session):
                 continue
             create_index_attempt(connector.id, credential.id, db_session)
 
@@ -160,12 +150,8 @@ def cleanup_indexing_jobs(
 
     # clean up completed jobs
     for attempt_id, job in existing_jobs.items():
-        index_attempt = get_index_attempt(
-            db_session=db_session, index_attempt_id=attempt_id
-        )
-
-        # do nothing for ongoing jobs that haven't been stopped
-        if not job.done() and not _is_indexing_job_marked_as_finished(index_attempt):
+        # do nothing for ongoing jobs
+        if not job.done():
             continue
 
         if job.status == "error":
@@ -173,7 +159,9 @@ def cleanup_indexing_jobs(
 
         job.release()
         del existing_jobs_copy[attempt_id]
-
+        index_attempt = get_index_attempt(
+            db_session=db_session, index_attempt_id=attempt_id
+        )
         if not index_attempt:
             logger.error(
                 f"Unable to find IndexAttempt for ID '{attempt_id}' when cleaning "
@@ -182,7 +170,7 @@ def cleanup_indexing_jobs(
             continue
 
         if index_attempt.status == IndexingStatus.IN_PROGRESS or job.status == "error":
-            _mark_run_failed(
+            mark_run_failed(
                 db_session=db_session,
                 index_attempt=index_attempt,
                 failure_reason=_UNEXPECTED_STATE_FAILURE_REASON,
@@ -196,7 +184,7 @@ def cleanup_indexing_jobs(
         )
         for index_attempt in in_progress_indexing_attempts:
             if index_attempt.id in existing_jobs:
-                # check to see if the job has been updated in last hour, if not
+                # check to see if the job has been updated in the 3 hours, if not
                 # assume it to frozen in some bad state and just mark it as failed. Note: this relies
                 # on the fact that the `time_updated` field is constantly updated every
                 # batch of documents indexed
@@ -204,7 +192,7 @@ def cleanup_indexing_jobs(
                 time_since_update = current_db_time - index_attempt.time_updated
                 if time_since_update.total_seconds() > 60 * 60:
                     existing_jobs[index_attempt.id].cancel()
-                    _mark_run_failed(
+                    mark_run_failed(
                         db_session=db_session,
                         index_attempt=index_attempt,
                         failure_reason="Indexing run frozen - no updates in an hour. "
@@ -212,13 +200,228 @@ def cleanup_indexing_jobs(
                     )
             else:
                 # If job isn't known, simply mark it as failed
-                _mark_run_failed(
+                mark_run_failed(
                     db_session=db_session,
                     index_attempt=index_attempt,
                     failure_reason=_UNEXPECTED_STATE_FAILURE_REASON,
                 )
 
     return existing_jobs_copy
+
+
+def _run_indexing(
+    db_session: Session,
+    index_attempt: IndexAttempt,
+) -> None:
+    """
+    1. Get documents which are either new or updated from specified application
+    2. Embed and index these documents into the chosen datastore (vespa)
+    3. Updates Postgres to record the indexed documents + the outcome of this run
+    """
+
+    def _get_document_generator(
+        db_session: Session, attempt: IndexAttempt
+    ) -> tuple[GenerateDocumentsOutput, float]:
+        # "official" timestamp for this run
+        # used for setting time bounds when fetching updates from apps and
+        # is stored in the DB as the last successful run time if this run succeeds
+        run_time = time.time()
+        run_dt = datetime.fromtimestamp(run_time, tz=timezone.utc)
+        run_time_str = run_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        task = attempt.connector.input_type
+
+        try:
+            runnable_connector, new_credential_json = instantiate_connector(
+                attempt.connector.source,
+                task,
+                attempt.connector.connector_specific_config,
+                attempt.credential.credential_json,
+            )
+            if new_credential_json is not None:
+                backend_update_credential_json(
+                    attempt.credential, new_credential_json, db_session
+                )
+        except Exception as e:
+            logger.exception(f"Unable to instantiate connector due to {e}")
+            disable_connector(attempt.connector.id, db_session)
+            raise e
+
+        if task == InputType.LOAD_STATE:
+            assert isinstance(runnable_connector, LoadConnector)
+            doc_batch_generator = runnable_connector.load_from_state()
+
+        elif task == InputType.POLL:
+            assert isinstance(runnable_connector, PollConnector)
+            if attempt.connector_id is None or attempt.credential_id is None:
+                raise ValueError(
+                    f"Polling attempt {attempt.id} is missing connector_id or credential_id, "
+                    f"can't fetch time range."
+                )
+            last_run_time = get_last_successful_attempt_time(
+                attempt.connector_id, attempt.credential_id, db_session
+            )
+            last_run_time_str = datetime.fromtimestamp(
+                last_run_time, tz=timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            logger.info(
+                f"Polling for updates between {last_run_time_str} and {run_time_str}"
+            )
+            doc_batch_generator = runnable_connector.poll_source(
+                start=last_run_time, end=run_time
+            )
+
+        else:
+            # Event types cannot be handled by a background type
+            raise RuntimeError(f"Invalid task type: {task}")
+
+        return doc_batch_generator, run_time
+
+    doc_batch_generator, run_time = _get_document_generator(db_session, index_attempt)
+
+    def _index(
+        db_session: Session,
+        attempt: IndexAttempt,
+        doc_batch_generator: GenerateDocumentsOutput,
+        run_time: float,
+    ) -> None:
+        indexing_pipeline = build_indexing_pipeline()
+
+        run_dt = datetime.fromtimestamp(run_time, tz=timezone.utc)
+        db_connector = attempt.connector
+        db_credential = attempt.credential
+
+        update_connector_credential_pair(
+            db_session=db_session,
+            connector_id=db_connector.id,
+            credential_id=db_credential.id,
+            attempt_status=IndexingStatus.IN_PROGRESS,
+            run_dt=run_dt,
+        )
+
+        net_doc_change = 0
+        document_count = 0
+        chunk_count = 0
+        try:
+            for doc_batch in doc_batch_generator:
+                logger.debug(
+                    f"Indexing batch of documents: {[doc.to_short_descriptor() for doc in doc_batch]}"
+                )
+
+                new_docs, total_batch_chunks = indexing_pipeline(
+                    documents=doc_batch,
+                    index_attempt_metadata=IndexAttemptMetadata(
+                        connector_id=db_connector.id,
+                        credential_id=db_credential.id,
+                    ),
+                )
+                net_doc_change += new_docs
+                chunk_count += total_batch_chunks
+                document_count += len(doc_batch)
+
+                # commit transaction so that the `update` below begins
+                # with a brand new transaction. Postgres uses the start
+                # of the transactions when computing `NOW()`, so if we have
+                # a long running transaction, the `time_updated` field will
+                # be inaccurate
+                db_session.commit()
+
+                # This new value is updated every batch, so UI can refresh per batch update
+                update_docs_indexed(
+                    db_session=db_session,
+                    index_attempt=attempt,
+                    total_docs_indexed=document_count,
+                    new_docs_indexed=net_doc_change,
+                )
+
+                # check if connector is disabled mid run and stop if so
+                db_session.refresh(db_connector)
+                if db_connector.disabled:
+                    # let the `except` block handle this
+                    raise RuntimeError("Connector was disabled mid run")
+
+            mark_attempt_succeeded(attempt, db_session)
+            update_connector_credential_pair(
+                db_session=db_session,
+                connector_id=db_connector.id,
+                credential_id=db_credential.id,
+                attempt_status=IndexingStatus.SUCCESS,
+                net_docs=net_doc_change,
+                run_dt=run_dt,
+            )
+
+            logger.info(
+                f"Indexed or updated {document_count} total documents for a total of {chunk_count} chunks"
+            )
+            logger.info(
+                f"Connector successfully finished, elapsed time: {time.time() - run_time} seconds"
+            )
+        except Exception as e:
+            logger.info(
+                f"Failed connector elapsed time: {time.time() - run_time} seconds"
+            )
+            mark_attempt_failed(attempt, db_session, failure_reason=str(e))
+            # The last attempt won't be marked failed until the next cycle's check for still in-progress attempts
+            # The connector_credential_pair is marked failed here though to reflect correctly in UI asap
+            update_connector_credential_pair(
+                db_session=db_session,
+                connector_id=attempt.connector.id,
+                credential_id=attempt.credential.id,
+                attempt_status=IndexingStatus.FAILED,
+                net_docs=net_doc_change,
+                run_dt=run_dt,
+            )
+            raise e
+
+    _index(db_session, index_attempt, doc_batch_generator, run_time)
+
+
+def _run_indexing_entrypoint(index_attempt_id: int, num_threads: int) -> None:
+    """Entrypoint for indexing run when using dask distributed.
+    Wraps the actual logic in a `try` block so that we can catch any exceptions
+    and mark the attempt as failed."""
+    try:
+        # set the indexing attempt ID so that all log messages from this process
+        # will have it added as a prefix
+        IndexAttemptSingleton.set_index_attempt_id(index_attempt_id)
+
+        logger.info(f"Setting task to use {num_threads} threads")
+        torch.set_num_threads(num_threads)
+
+        with Session(get_sqlalchemy_engine()) as db_session:
+            attempt = get_index_attempt(
+                db_session=db_session, index_attempt_id=index_attempt_id
+            )
+            if attempt is None:
+                raise RuntimeError(
+                    f"Unable to find IndexAttempt for ID '{index_attempt_id}'"
+                )
+
+            logger.info(
+                f"Running indexing attempt for connector: '{attempt.connector.name}', "
+                f"with config: '{attempt.connector.connector_specific_config}', and "
+                f"with credentials: '{attempt.credential_id}'"
+            )
+            mark_attempt_in_progress(attempt, db_session)
+            update_connector_credential_pair(
+                db_session=db_session,
+                connector_id=attempt.connector.id,
+                credential_id=attempt.credential.id,
+                attempt_status=IndexingStatus.IN_PROGRESS,
+            )
+
+            _run_indexing(
+                db_session=db_session,
+                index_attempt=attempt,
+            )
+
+            logger.info(
+                f"Completed indexing attempt for connector: '{attempt.connector.name}', "
+                f"with config: '{attempt.connector.connector_specific_config}', and "
+                f"with credentials: '{attempt.credential_id}'"
+            )
+    except Exception as e:
+        logger.exception(f"Indexing job with ID '{index_attempt_id}' failed due to {e}")
 
 
 def kickoff_indexing_jobs(
@@ -258,7 +461,7 @@ def kickoff_indexing_jobs(
             continue
 
         run = client.submit(
-            run_indexing_entrypoint, attempt.id, _get_num_threads(), pure=False
+            _run_indexing_entrypoint, attempt.id, _get_num_threads(), pure=False
         )
         if run:
             logger.info(
@@ -286,8 +489,6 @@ def update_loop(delay: int = 10, num_workers: int = NUM_INDEXING_WORKERS) -> Non
             silence_logs=logging.ERROR,
         )
         client = Client(cluster)
-        if LOG_LEVEL.lower() == "debug":
-            client.register_worker_plugin(ResourceLogger())
 
     existing_jobs: dict[int, Future | SimpleJob] = {}
     engine = get_sqlalchemy_engine()
@@ -301,10 +502,6 @@ def update_loop(delay: int = 10, num_workers: int = NUM_INDEXING_WORKERS) -> Non
         start = time.time()
         start_time_utc = datetime.utcfromtimestamp(start).strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"Running update, current UTC time: {start_time_utc}")
-        logger.debug(
-            "Found existing indexing jobs: "
-            f"{[(attempt_id, job.status) for attempt_id, job in existing_jobs.items()]}"
-        )
         try:
             with Session(engine, expire_on_commit=False) as db_session:
                 existing_jobs = cleanup_indexing_jobs(
@@ -322,8 +519,7 @@ def update_loop(delay: int = 10, num_workers: int = NUM_INDEXING_WORKERS) -> Non
 
 
 if __name__ == "__main__":
-    if not MODEL_SERVER_HOST:
-        logger.info("Warming up Embedding Model(s)")
-        warm_up_models(indexer_only=True)
+    logger.info("Warming up Embedding Model(s)")
+    warm_up_models(indexer_only=True)
     logger.info("Starting Indexing Loop")
     update_loop()

@@ -12,10 +12,10 @@ export const getCurrentUser = async (): Promise<User | null> => {
   return user;
 };
 
-export const logout = async (): Promise<Response> => {
+export const logout = async (): Promise<boolean> => {
   const response = await fetch("/auth/logout", {
     method: "POST",
     credentials: "include",
   });
-  return response;
+  return response.ok;
 };

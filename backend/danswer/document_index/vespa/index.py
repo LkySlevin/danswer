@@ -19,8 +19,6 @@ from danswer.configs.app_configs import DOC_TIME_DECAY
 from danswer.configs.app_configs import DOCUMENT_INDEX_NAME
 from danswer.configs.app_configs import EDIT_KEYWORD_QUERY
 from danswer.configs.app_configs import FAVOR_RECENT_DECAY_MULTIPLIER
-from danswer.configs.app_configs import HYBRID_ALPHA
-from danswer.configs.app_configs import LOG_VESPA_TIMING_INFORMATION
 from danswer.configs.app_configs import NUM_RETURNED_HITS
 from danswer.configs.app_configs import VESPA_DEPLOYMENT_ZIP
 from danswer.configs.app_configs import VESPA_HOST
@@ -76,10 +74,6 @@ _BATCH_SIZE = 100  # Specific to Vespa
 _NUM_THREADS = (
     16  # since Vespa doesn't allow batching of inserts / updates, we use threads
 )
-# up from 500ms for now, since we've seen quite a few timeouts
-# in the long term, we are looking to improve the performance of Vespa
-# so that we can bring this back to default
-_VESPA_TIMEOUT = "3s"
 # Specific to Vespa, needed for highlighting matching keywords / section
 CONTENT_SUMMARY = "content_summary"
 
@@ -339,15 +333,9 @@ def _build_vespa_filters(filters: IndexFilters, include_hidden: bool = False) ->
     filter_str = f"!({HIDDEN}=true) and " if not include_hidden else ""
 
     # CAREFUL touching this one, currently there is no second ACL double-check post retrieval
-    if filters.access_control_list is not None:
-        filter_str += _build_or_filters(
-            ACCESS_CONTROL_LIST, filters.access_control_list
-        )
+    filter_str += _build_or_filters(ACCESS_CONTROL_LIST, filters.access_control_list)
 
-    source_strs = (
-        [s.value for s in filters.source_type] if filters.source_type else None
-    )
-    filter_str += _build_or_filters(SOURCE_TYPE, source_strs)
+    filter_str += _build_or_filters(SOURCE_TYPE, filters.source_type)
 
     filter_str += _build_or_filters(DOCUMENT_SETS, filters.document_set)
 
@@ -441,27 +429,13 @@ def _vespa_hit_to_inference_chunk(hit: dict[str, Any]) -> InferenceChunk:
     )
 
 
-def _query_vespa(query_params: Mapping[str, str | int | float]) -> list[InferenceChunk]:
+def _query_vespa(query_params: Mapping[str, str | int]) -> list[InferenceChunk]:
     if "query" in query_params and not cast(str, query_params["query"]).strip():
         raise ValueError("No/empty query received")
-
-    response = requests.get(
-        SEARCH_ENDPOINT,
-        params=dict(
-            **query_params,
-            **{
-                "presentation.timing": True,
-            }
-            if LOG_VESPA_TIMING_INFORMATION
-            else {},
-        ),
-    )
+    response = requests.get(SEARCH_ENDPOINT, params=query_params)
     response.raise_for_status()
 
-    response_json: dict[str, Any] = response.json()
-    if LOG_VESPA_TIMING_INFORMATION:
-        logger.info("Vespa timing info: %s", response_json.get("timing"))
-    hits = response_json["root"].get("children", [])
+    hits = response.json()["root"].get("children", [])
 
     for hit in hits:
         if hit["fields"].get(CONTENT) is None:
@@ -643,7 +617,6 @@ class VespaIndex(DocumentIndex):
             "hits": num_to_retrieve,
             "offset": 0,
             "ranking.profile": "keyword_search",
-            "timeout": _VESPA_TIMEOUT,
         }
 
         return _query_vespa(params)
@@ -683,7 +656,6 @@ class VespaIndex(DocumentIndex):
             "hits": num_to_retrieve,
             "offset": 0,
             "ranking.profile": "semantic_search",
-            "timeout": _VESPA_TIMEOUT,
         }
 
         return _query_vespa(params)
@@ -694,7 +666,6 @@ class VespaIndex(DocumentIndex):
         filters: IndexFilters,
         favor_recent: bool,
         num_to_retrieve: int,
-        hybrid_alpha: float | None = HYBRID_ALPHA,
         distance_cutoff: float | None = SEARCH_DISTANCE_CUTOFF,
         edit_keyword_query: bool = EDIT_KEYWORD_QUERY,
     ) -> list[InferenceChunk]:
@@ -716,18 +687,14 @@ class VespaIndex(DocumentIndex):
             " ".join(remove_stop_words(query)) if edit_keyword_query else query
         )
 
-        params: dict[str, str | int | float] = {
+        params: dict[str, str | int] = {
             "yql": yql,
             "query": query_keywords,
             "input.query(query_embedding)": str(query_embedding),
             "input.query(decay_factor)": str(DOC_TIME_DECAY * decay_multiplier),
-            "input.query(alpha)": hybrid_alpha
-            if hybrid_alpha is not None
-            else HYBRID_ALPHA,
             "hits": num_to_retrieve,
             "offset": 0,
             "ranking.profile": "hybrid_search",
-            "timeout": _VESPA_TIMEOUT,
         }
 
         return _query_vespa(params)
@@ -755,7 +722,6 @@ class VespaIndex(DocumentIndex):
             "hits": num_to_retrieve,
             "offset": 0,
             "ranking.profile": "admin_search",
-            "timeout": _VESPA_TIMEOUT,
         }
 
         return _query_vespa(params)

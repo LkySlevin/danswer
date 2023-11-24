@@ -3,7 +3,6 @@ FROM python:3.11.4-slim-bookworm
 # Default DANSWER_VERSION, typically overriden during builds by GitHub Actions.
 ARG DANSWER_VERSION=0.2-dev
 ENV DANSWER_VERSION=${DANSWER_VERSION}
-RUN echo "DANSWER_VERSION: ${DANSWER_VERSION}"
 
 # Install system dependencies
 RUN apt-get update && \
@@ -46,7 +45,6 @@ RUN apt-get remove -y linux-libc-dev && \
 # Set up application files
 WORKDIR /app
 COPY ./danswer /app/danswer
-COPY ./shared_models /app/shared_models
 COPY ./alembic /app/alembic
 COPY ./alembic.ini /app/alembic.ini
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf

@@ -31,7 +31,7 @@ def _open_files_at_location(
     if extension == ".zip":
         for file_info, file in load_files_from_zip(file_path, ignore_dirs=True):
             yield file_info.filename, file
-    elif extension in [".txt", ".pdf", ".md", ".mdx"]:
+    elif extension == ".txt" or extension == ".pdf":
         mode = "r"
         if extension == ".pdf":
             mode = "rb"
@@ -64,9 +64,7 @@ def _process_file(
     return [
         Document(
             id=file_name,
-            sections=[
-                Section(link=metadata.get("link", ""), text=file_content_raw.strip())
-            ],
+            sections=[Section(link=metadata.get("link", ""), text=file_content_raw)],
             source=DocumentSource.FILE,
             semantic_identifier=file_name,
             doc_updated_at=time_updated,

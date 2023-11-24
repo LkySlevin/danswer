@@ -144,26 +144,17 @@ const Main = () => {
         </>
       )}
 
-      <h2 className="font-bold mb-2 mt-6 ml-auto mr-auto">
-        Step 2: Manage Connectors
-      </h2>
       {notionConnectorIndexingStatuses.length > 0 && (
         <>
+          <h2 className="font-bold mb-2 mt-6 ml-auto mr-auto">
+            Notion indexing status
+          </h2>
           <p className="text-sm mb-2">
             The latest page updates are fetched from Notion every 10 minutes.
           </p>
           <div className="mb-2">
             <ConnectorsTable<NotionConfig, NotionCredentialJson>
               connectorIndexingStatuses={notionConnectorIndexingStatuses}
-              specialColumns={[
-                {
-                  header: "Root Page ID",
-                  key: "root_page_id",
-                  getValue: (ccPairStatus) =>
-                    ccPairStatus.connector.connector_specific_config
-                      .root_page_id || "-",
-                },
-              ]}
               liveCredential={notionCredential}
               getCredential={(credential) => {
                 return (
@@ -186,43 +177,21 @@ const Main = () => {
         </>
       )}
 
-      {notionCredential && (
+      {notionCredential && notionConnectorIndexingStatuses.length === 0 && (
         <>
           <div className="border-solid border-gray-600 border rounded-md p-6 mt-4">
-            <h2 className="font-bold mb-1">Create New Connection</h2>
+            <h2 className="font-bold mb-3">Create Connection</h2>
             <p className="text-sm mb-4">
               Press connect below to start the connection to Notion.
             </p>
             <ConnectorForm<NotionConfig>
-              nameBuilder={(values) =>
-                values.root_page_id
-                  ? `NotionConnector-${values.root_page_id}`
-                  : "NotionConnector"
-              }
-              ccPairNameBuilder={(values) =>
-                values.root_page_id ? `Notion-${values.root_page_id}` : "Notion"
-              }
+              nameBuilder={() => `NotionConnector`}
+              ccPairNameBuilder={() => `Notion`}
               source="notion"
               inputType="poll"
-              formBody={
-                <>
-                  <TextFormField
-                    name="root_page_id"
-                    label="[Optional] Root Page ID"
-                    subtext={
-                      "If specified, will only index the specified page + all of its child pages. " +
-                      "If left blank, will index all pages the integration has been given access to."
-                    }
-                    autoCompleteDisabled={true}
-                  />
-                </>
-              }
-              validationSchema={Yup.object().shape({
-                root_page_id: Yup.string(),
-              })}
-              initialValues={{
-                root_page_id: "",
-              }}
+              formBody={<></>}
+              validationSchema={Yup.object().shape({})}
+              initialValues={{}}
               refreshFreq={10 * 60} // 10 minutes
               credentialId={notionCredential.id}
             />

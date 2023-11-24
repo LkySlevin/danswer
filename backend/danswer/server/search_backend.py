@@ -17,14 +17,12 @@ from danswer.document_index.factory import get_default_document_index
 from danswer.document_index.vespa.index import VespaIndex
 from danswer.search.access_filters import build_access_filters_for_user
 from danswer.search.danswer_helper import recommend_search_flow
-from danswer.search.models import BaseFilters
 from danswer.search.models import IndexFilters
 from danswer.search.search_runner import chunks_to_search_docs
 from danswer.search.search_runner import danswer_search
+from danswer.secondary_llm_flows.extract_filters import extract_question_time_filters
 from danswer.secondary_llm_flows.query_validation import get_query_answerability
 from danswer.secondary_llm_flows.query_validation import stream_query_answerability
-from danswer.secondary_llm_flows.source_filter import extract_question_source_filters
-from danswer.secondary_llm_flows.time_filter import extract_question_time_filters
 from danswer.server.models import HelperResponse
 from danswer.server.models import QAFeedbackRequest
 from danswer.server.models import QAResponse
@@ -34,8 +32,6 @@ from danswer.server.models import SearchDoc
 from danswer.server.models import SearchFeedbackRequest
 from danswer.server.models import SearchResponse
 from danswer.utils.logger import setup_logger
-from danswer.utils.threadpool_concurrency import FunctionCall
-from danswer.utils.threadpool_concurrency import run_functions_in_parallel
 
 logger = setup_logger()
 
@@ -47,7 +43,6 @@ router = APIRouter()
 
 class AdminSearchRequest(BaseModel):
     query: str
-    filters: BaseFilters
 
 
 class AdminSearchResponse(BaseModel):
@@ -65,9 +60,9 @@ def admin_search(
 
     user_acl_filters = build_access_filters_for_user(user, db_session)
     final_filters = IndexFilters(
-        source_type=question.filters.source_type,
-        document_set=question.filters.document_set,
-        time_cutoff=question.filters.time_cutoff,
+        source_type=None,
+        document_set=None,
+        time_cutoff=None,
         access_control_list=user_acl_filters,
     )
     document_index = get_default_document_index()
@@ -130,34 +125,33 @@ def handle_search_request(
     query = question.query
     logger.info(f"Received {question.search_type.value} " f"search query: {query}")
 
-    functions_to_run = [
-        FunctionCall(extract_question_time_filters, (question,), {}),
-        FunctionCall(extract_question_source_filters, (question, db_session), {}),
-    ]
-
-    parallel_results = run_functions_in_parallel(functions_to_run)
-
-    time_cutoff, favor_recent = parallel_results["extract_question_time_filters"]
-    source_filters = parallel_results["extract_question_source_filters"]
-
+    time_cutoff, favor_recent = extract_question_time_filters(question)
     question.filters.time_cutoff = time_cutoff
     question.favor_recent = favor_recent
-    question.filters.source_type = source_filters
 
-    top_chunks, _, query_event_id = danswer_search(
+    ranked_chunks, unranked_chunks, query_event_id = danswer_search(
         question=question,
         user=user,
         db_session=db_session,
         document_index=get_default_document_index(),
-        skip_llm_chunk_filter=True,
     )
 
-    top_docs = chunks_to_search_docs(top_chunks)
+    if not ranked_chunks:
+        return SearchResponse(
+            top_ranked_docs=None,
+            lower_ranked_docs=None,
+            query_event_id=query_event_id,
+            time_cutoff=time_cutoff,
+            favor_recent=favor_recent,
+        )
+
+    top_docs = chunks_to_search_docs(ranked_chunks)
+    lower_top_docs = chunks_to_search_docs(unranked_chunks)
 
     return SearchResponse(
-        top_documents=top_docs,
+        top_ranked_docs=top_docs,
+        lower_ranked_docs=lower_top_docs or None,
         query_event_id=query_event_id,
-        source_type=source_filters,
         time_cutoff=time_cutoff,
         favor_recent=favor_recent,
     )

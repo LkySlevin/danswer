@@ -1,19 +1,21 @@
+import numpy
 from sentence_transformers import SentenceTransformer  # type: ignore
 
 from danswer.configs.app_configs import ENABLE_MINI_CHUNK
 from danswer.configs.model_configs import ASYM_PASSAGE_PREFIX
 from danswer.configs.model_configs import BATCH_SIZE_ENCODE_CHUNKS
+from danswer.configs.model_configs import NORMALIZE_EMBEDDINGS
 from danswer.indexing.chunker import split_chunk_text_into_mini_chunks
 from danswer.indexing.models import ChunkEmbedding
 from danswer.indexing.models import DocAwareChunk
 from danswer.indexing.models import IndexChunk
 from danswer.search.models import Embedder
-from danswer.search.search_nlp_models import EmbeddingModel
+from danswer.search.search_nlp_models import get_default_embedding_model
 from danswer.utils.timing import log_function_time
 
 
 @log_function_time()
-def embed_chunks(
+def encode_chunks(
     chunks: list[DocAwareChunk],
     embedding_model: SentenceTransformer | None = None,
     batch_size: int = BATCH_SIZE_ENCODE_CHUNKS,
@@ -22,7 +24,7 @@ def embed_chunks(
 ) -> list[IndexChunk]:
     embedded_chunks: list[IndexChunk] = []
     if embedding_model is None:
-        embedding_model = EmbeddingModel()
+        embedding_model = get_default_embedding_model()
 
     chunk_texts = []
     chunk_mini_chunks_count = {}
@@ -41,10 +43,15 @@ def embed_chunks(
         chunk_texts[i : i + batch_size] for i in range(0, len(chunk_texts), batch_size)
     ]
 
-    embeddings: list[list[float]] = []
+    embeddings_np: list[numpy.ndarray] = []
     for text_batch in text_batches:
         # Normalize embeddings is only configured via model_configs.py, be sure to use right value for the set loss
-        embeddings.extend(embedding_model.encode(text_batch))
+        embeddings_np.extend(
+            embedding_model.encode(
+                text_batch, normalize_embeddings=NORMALIZE_EMBEDDINGS
+            )
+        )
+    embeddings: list[list[float]] = [embedding.tolist() for embedding in embeddings_np]
 
     embedding_ind_start = 0
     for chunk_ind, chunk in enumerate(chunks):
@@ -67,4 +74,4 @@ def embed_chunks(
 
 class DefaultEmbedder(Embedder):
     def embed(self, chunks: list[DocAwareChunk]) -> list[IndexChunk]:
-        return embed_chunks(chunks)
+        return encode_chunks(chunks)

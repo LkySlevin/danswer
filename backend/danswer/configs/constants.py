@@ -35,15 +35,12 @@ SCORE = "score"
 ID_SEPARATOR = ":;:"
 DEFAULT_BOOST = 0
 SESSION_KEY = "session"
-QUERY_EVENT_ID = "query_event_id"
-LLM_CHUNKS = "llm_chunks"
 
 
 class DocumentSource(str, Enum):
     SLACK = "slack"
     WEB = "web"
     GOOGLE_DRIVE = "google_drive"
-    REQUESTTRACKER = "requesttracker"
     GITHUB = "github"
     GURU = "guru"
     BOOKSTACK = "bookstack"

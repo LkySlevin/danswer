@@ -31,8 +31,6 @@ schema danswer_chunk {
         # https://docs.vespa.ai/en/attributes.html potential enum store for speed, but probably not worth it
         field source_type type string {
             indexing: summary | attribute
-            rank: filter
-            attribute: fast-search
         }
         # Can also index links https://docs.vespa.ai/en/reference/schema-reference.html#attribute
         # URL type matching
@@ -63,7 +61,6 @@ schema danswer_chunk {
         }
         field hidden type bool {
             indexing: summary | attribute
-            rank: filter
         }
         field metadata type string {
             indexing: summary | attribute
@@ -85,12 +82,10 @@ schema danswer_chunk {
         }
         field access_control_list type weightedset<string> {
             indexing: summary | attribute
-            rank: filter
             attribute: fast-search
         }
         field document_sets type weightedset<string> {
             indexing: summary | attribute
-            rank: filter
             attribute: fast-search
         }
     }
@@ -115,7 +110,6 @@ schema danswer_chunk {
             expression: max(if(isNan(attribute(doc_updated_at)) == 1, 7890000, now() - attribute(doc_updated_at)) / 31536000, 0)
         }
 
-        # Document score decays from 1 to 0.5 as age of last updated time increases
         function inline recency_bias() {
             # Cap the loss at 50% score reduction
             expression: max(1 / (1 + query(decay_factor) * document_age), 0.5)
@@ -156,7 +150,7 @@ schema danswer_chunk {
         }
 
         global-phase {
-            expression: ((query(alpha) * normalize_linear(closeness(field, embeddings))) + ((1 - query(alpha)) * normalize_linear(bm25(content)))) * document_boost * recency_bias
+            expression: (normalize_linear(closeness(field, embeddings)) + normalize_linear(bm25(content))) / 2 * document_boost * recency_bias
             rerank-count: 1000
         }
 

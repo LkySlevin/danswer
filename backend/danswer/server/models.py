@@ -10,7 +10,6 @@ from pydantic import validator
 from pydantic.generics import GenericModel
 
 from danswer.auth.schemas import UserRole
-from danswer.configs.app_configs import DOCUMENT_INDEX_NAME
 from danswer.configs.app_configs import MASK_CREDENTIAL_PREFIX
 from danswer.configs.constants import AuthType
 from danswer.configs.constants import DocumentSource
@@ -172,57 +171,12 @@ class SearchDoc(BaseModel):
         return initial_dict
 
 
-class QuestionRequest(BaseModel):
-    query: str
-    filters: BaseFilters
-    collection: str = DOCUMENT_INDEX_NAME
-    search_type: SearchType = SearchType.HYBRID
-    enable_auto_detect_filters: bool = True
-    favor_recent: bool | None = None
-    offset: int | None = None
-
-
-class QAFeedbackRequest(BaseModel):
-    query_id: int
-    feedback: QAFeedbackType
-
-
-class SearchFeedbackRequest(BaseModel):
-    query_id: int
-    document_id: str
-    document_rank: int
-    click: bool
-    search_feedback: SearchFeedbackType
-
-
-class QueryValidationResponse(BaseModel):
-    reasoning: str
-    answerable: bool
-
-
 class RetrievalDocs(BaseModel):
     top_documents: list[SearchDoc]
 
 
-class SearchResponse(RetrievalDocs):
-    query_event_id: int
-    source_type: list[DocumentSource] | None
-    time_cutoff: datetime | None
-    favor_recent: bool
-
-
-class QAResponse(SearchResponse):
-    answer: str | None  # DanswerAnswer
-    quotes: list[DanswerQuote] | None
-    predicted_flow: QueryFlow
-    predicted_search: SearchType
-    eval_res_valid: bool | None = None
-    llm_chunks_indices: list[int] | None = None
-    error_msg: str | None = None
-
-
-# First chunk of info for streaming QA
-class QADocsResponse(RetrievalDocs):
+class RerankedRetrievalDocs(RetrievalDocs):
+    unranked_top_documents: list[SearchDoc]
     predicted_flow: QueryFlow
     predicted_search: SearchType
     time_cutoff: datetime | None
@@ -236,13 +190,23 @@ class QADocsResponse(RetrievalDocs):
         return initial_dict
 
 
-# second chunk of info for streaming QA
-class LLMRelevanceFilterResponse(BaseModel):
-    relevant_chunk_indices: list[int]
-
-
 class CreateChatSessionID(BaseModel):
     chat_session_id: int
+
+
+class QuestionRequest(BaseModel):
+    query: str
+    collection: str
+    filters: BaseFilters
+    offset: int | None
+    enable_auto_detect_filters: bool
+    favor_recent: bool | None = None
+    search_type: SearchType = SearchType.HYBRID
+
+
+class QAFeedbackRequest(BaseModel):
+    query_id: int
+    feedback: QAFeedbackType
 
 
 class ChatFeedbackRequest(BaseModel):
@@ -251,6 +215,14 @@ class ChatFeedbackRequest(BaseModel):
     edit_number: int
     is_positive: bool | None = None
     feedback_text: str | None = None
+
+
+class SearchFeedbackRequest(BaseModel):
+    query_id: int
+    document_id: str
+    document_rank: int
+    click: bool
+    search_feedback: SearchFeedbackType
 
 
 class CreateChatMessageRequest(BaseModel):
@@ -306,6 +278,29 @@ class ChatSessionDetailResponse(BaseModel):
     chat_session_id: int
     description: str
     messages: list[ChatMessageDetail]
+
+
+class QueryValidationResponse(BaseModel):
+    reasoning: str
+    answerable: bool
+
+
+class SearchResponse(BaseModel):
+    # For semantic search, top docs are reranked, the remaining are as ordered from retrieval
+    top_ranked_docs: list[SearchDoc] | None
+    lower_ranked_docs: list[SearchDoc] | None
+    query_event_id: int
+    time_cutoff: datetime | None
+    favor_recent: bool
+
+
+class QAResponse(SearchResponse):
+    answer: str | None  # DanswerAnswer
+    quotes: list[DanswerQuote] | None
+    predicted_flow: QueryFlow
+    predicted_search: SearchType
+    eval_res_valid: bool | None = None
+    error_msg: str | None = None
 
 
 class UserByEmail(BaseModel):
@@ -462,21 +457,12 @@ class DocumentSetUpdateRequest(BaseModel):
     cc_pair_ids: list[int]
 
 
-class CheckDocSetPublicRequest(BaseModel):
-    document_set_ids: list[int]
-
-
-class CheckDocSetPublicResponse(BaseModel):
-    is_public: bool
-
-
 class DocumentSet(BaseModel):
     id: int
     name: str
     description: str
     cc_pair_descriptors: list[ConnectorCredentialPairDescriptor]
     is_up_to_date: bool
-    contains_non_public: bool
 
     @classmethod
     def from_model(cls, document_set_model: DocumentSetDBModel) -> "DocumentSet":
@@ -484,12 +470,6 @@ class DocumentSet(BaseModel):
             id=document_set_model.id,
             name=document_set_model.name,
             description=document_set_model.description,
-            contains_non_public=any(
-                [
-                    not cc_pair.is_public
-                    for cc_pair in document_set_model.connector_credential_pairs
-                ]
-            ),
             cc_pair_descriptors=[
                 ConnectorCredentialPairDescriptor(
                     id=cc_pair.id,

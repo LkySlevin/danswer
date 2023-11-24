@@ -4,30 +4,18 @@ import { buildUrl } from "./utilsSS";
 import { ReadonlyRequestCookies } from "next/dist/server/web/spec-extension/adapters/request-cookies";
 import { AuthType } from "./constants";
 
-export interface AuthTypeMetadata {
-  authType: AuthType;
-  autoRedirect: boolean;
-}
-
-export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
+export const getAuthTypeSS = async (): Promise<AuthType> => {
   const res = await fetch(buildUrl("/auth/type"));
   if (!res.ok) {
     throw new Error("Failed to fetch data");
   }
 
   const data: { auth_type: string } = await res.json();
-  const authType = data.auth_type as AuthType;
-
-  // for SAML / OIDC, we auto-redirect the user to the IdP when the user visits
-  // Danswer in an un-authenticated state
-  if (authType === "oidc" || authType === "saml") {
-    return { authType, autoRedirect: true };
-  }
-  return { authType, autoRedirect: false };
+  return data.auth_type as AuthType;
 };
 
 export const getAuthDisabledSS = async (): Promise<boolean> => {
-  return (await getAuthTypeMetadataSS()).authType === "disabled";
+  return (await getAuthTypeSS()) === "disabled";
 };
 
 const geOIDCAuthUrlSS = async (): Promise<string> => {
@@ -60,19 +48,21 @@ const getSAMLAuthUrlSS = async (): Promise<string> => {
   return data.authorization_url;
 };
 
-export const getAuthUrlSS = async (authType: AuthType): Promise<string> => {
-  // Returns the auth url for the given auth type
+export const getAuthUrlSS = async (
+  authType: AuthType
+): Promise<[string, boolean]> => {
+  // Returns the auth url and whether or not we should auto-redirect
   switch (authType) {
     case "disabled":
-      return "";
+      return ["", true];
     case "google_oauth": {
-      return await getGoogleOAuthUrlSS();
+      return [await getGoogleOAuthUrlSS(), false];
     }
     case "saml": {
-      return await getSAMLAuthUrlSS();
+      return [await getSAMLAuthUrlSS(), true];
     }
     case "oidc": {
-      return await geOIDCAuthUrlSS();
+      return [await geOIDCAuthUrlSS(), true];
     }
   }
 };

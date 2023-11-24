@@ -3,10 +3,8 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from danswer.configs.app_configs import DISABLE_LLM_CHUNK_FILTER
 from danswer.configs.app_configs import NUM_RERANKED_RESULTS
 from danswer.configs.app_configs import NUM_RETURNED_HITS
-from danswer.configs.constants import DocumentSource
 from danswer.configs.model_configs import SKIP_RERANKING
 from danswer.indexing.models import DocAwareChunk
 from danswer.indexing.models import IndexChunk
@@ -33,13 +31,13 @@ class Embedder:
 
 
 class BaseFilters(BaseModel):
-    source_type: list[DocumentSource] | None = None
+    source_type: list[str] | None = None
     document_set: list[str] | None = None
     time_cutoff: datetime | None = None
 
 
 class IndexFilters(BaseFilters):
-    access_control_list: list[str] | None
+    access_control_list: list[str]
 
 
 class ChunkMetric(BaseModel):
@@ -58,13 +56,10 @@ class SearchQuery(BaseModel):
     skip_rerank: bool = SKIP_RERANKING
     # Only used if not skip_rerank
     num_rerank: int | None = NUM_RERANKED_RESULTS
-    skip_llm_chunk_filter: bool = DISABLE_LLM_CHUNK_FILTER
-    # Only used if not skip_llm_chunk_filter
-    max_llm_filter_chunks: int = NUM_RERANKED_RESULTS
 
 
 class RetrievalMetricsContainer(BaseModel):
-    search_type: SearchType
+    keyword_search: bool  # False for Vector Search
     metrics: list[ChunkMetric]  # This contains the scores for retrieval as well
 
 

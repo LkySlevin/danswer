@@ -1,5 +1,3 @@
-<!-- DANSWER_METADATA={"link": "https://github.com/danswer-ai/danswer/blob/main/CONTRIBUTING.md"} -->
-
 # Contributing to Danswer
 Hey there! We are so excited that you're interested in Danswer.
 

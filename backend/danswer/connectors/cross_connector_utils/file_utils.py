@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import zipfile
 from collections.abc import Generator
 from pathlib import Path
@@ -14,25 +13,7 @@ from danswer.utils.logger import setup_logger
 
 logger = setup_logger()
 
-
-def extract_metadata(line: str) -> dict | None:
-    html_comment_pattern = r"<!--\s*DANSWER_METADATA=\{(.*?)\}\s*-->"
-    hashtag_pattern = r"#DANSWER_METADATA=\{(.*?)\}"
-
-    html_comment_match = re.search(html_comment_pattern, line)
-    hashtag_match = re.search(hashtag_pattern, line)
-
-    if html_comment_match:
-        json_str = html_comment_match.group(1)
-    elif hashtag_match:
-        json_str = hashtag_match.group(1)
-    else:
-        return None
-
-    try:
-        return json.loads("{" + json_str + "}")
-    except json.JSONDecodeError:
-        return None
+_METADATA_FLAG = "#DANSWER_METADATA="
 
 
 def read_pdf_file(file: IO[Any], file_name: str, pdf_pass: str | None = None) -> str:
@@ -85,7 +66,7 @@ def load_files_from_zip(
                 yield file_info, file
 
 
-def read_file(file_reader: IO[Any]) -> tuple[str, dict]:
+def read_file(file_reader: IO[Any]) -> tuple[str, dict[str, Any]]:
     metadata = {}
     file_content_raw = ""
     for ind, line in enumerate(file_reader):
@@ -93,13 +74,8 @@ def read_file(file_reader: IO[Any]) -> tuple[str, dict]:
             line = line.decode("utf-8")
         line = str(line)
 
-        if ind == 0:
-            metadata_or_none = extract_metadata(line)
-            if metadata_or_none is not None:
-                metadata = metadata_or_none
-            else:
-                file_content_raw += line
-
+        if ind == 0 and line.startswith(_METADATA_FLAG):
+            metadata = json.loads(line.replace(_METADATA_FLAG, "", 1).strip())
         else:
             file_content_raw += line
 

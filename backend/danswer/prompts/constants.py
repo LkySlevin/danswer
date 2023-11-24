@@ -1,4 +1,4 @@
-GENERAL_SEP_PAT = "--------------"  # Same length as Langchain's separator
+GENERAL_SEP_PAT = "-----"
 CODE_BLOCK_PAT = "```\n{}\n```"
 QUESTION_PAT = "Query:"
 THOUGHT_PAT = "Thought:"
@@ -9,4 +9,3 @@ UNCERTAINTY_PAT = "?"
 QUOTE_PAT = "Quote:"
 QUOTES_PAT_PLURAL = "Quotes:"
 INVALID_PAT = "Invalid:"
-SOURCES_KEY = "sources"
